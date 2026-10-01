@@ -22,5 +22,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "OCRHoneywell"
+rootProject.name = "ControlDeVisitas"
 include ':app'
+

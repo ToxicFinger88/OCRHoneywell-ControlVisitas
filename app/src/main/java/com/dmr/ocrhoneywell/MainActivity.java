@@ -642,19 +642,13 @@ public class MainActivity extends AppCompatActivity {
     private void mostrarMenuExportacion() {
         new AlertDialog.Builder(this)
                 .setTitle("Exportar / Guardar")
-                .setItems(new CharSequence[]{
-                        "Restaurar lote local desde Firebase",
-                        "Exportar Excel a Downloads",
-                        "Elegir ubicación XLS"
-                }, (dialog, which) -> {
-                    if (which == 0) {
-                        restaurarLoteHoyDesdeFirebase();
-                    } else if (which == 1) {
-                        exportarExcelDownloads();
-                    } else {
-                        elegirUbicacionExportacionXls();
-                    }
-                })
+                .setItems(
+                        new CharSequence[]{
+                                "Elegir ubicación XLS"
+                        },
+                        (dialog, which) ->
+                                elegirUbicacionExportacionXls()
+                )
                 .setNegativeButton("Cerrar", null)
                 .show();
     }
@@ -747,8 +741,6 @@ public class MainActivity extends AppCompatActivity {
 
         db.collection("visitas")
                 .whereEqualTo("empresaId", empresaId)
-                .whereGreaterThanOrEqualTo("fecha", inicio.getTime())
-                .whereLessThanOrEqualTo("fecha", fin.getTime())
                 .get()
                 .addOnSuccessListener(queryDocumentSnapshots -> {
 
@@ -764,30 +756,14 @@ public class MainActivity extends AppCompatActivity {
                     titulo.setPadding(0, 0, 0, 16);
                     contenedor.addView(titulo);
 
-                    if (queryDocumentSnapshots.isEmpty()) {
-                        TextView sinDatos = new TextView(this);
-                        sinDatos.setText("Sin lecturas registradas para el día de hoy.");
-                        sinDatos.setTextSize(16);
-                        sinDatos.setTextColor(Color.DKGRAY);
-                        sinDatos.setGravity(Gravity.CENTER);
-                        sinDatos.setPadding(20, 40, 20, 40);
-                        contenedor.addView(sinDatos);
-
-                        new AlertDialog.Builder(this)
-                                .setTitle("Visitas de hoy")
-                                .setView(contenedor)
-                                .setPositiveButton("Aceptar", null)
-                                .show();
-
-                        return;
-                    }
-
                     TableLayout tabla = new TableLayout(this);
                     tabla.setStretchAllColumns(false);
                     tabla.setShrinkAllColumns(false);
 
                     TableRow encabezado = new TableRow(this);
-                    encabezado.setBackgroundColor(Color.parseColor("#E5E7EB"));
+                    encabezado.setBackgroundColor(
+                            Color.parseColor("#E5E7EB")
+                    );
 
                     encabezado.addView(crearCelda("Hora", true));
                     encabezado.addView(crearCelda("Cédula", true));
@@ -798,13 +774,52 @@ public class MainActivity extends AppCompatActivity {
 
                     tabla.addView(encabezado);
 
+                    int contador = 0;
+
                     for (QueryDocumentSnapshot doc : queryDocumentSnapshots) {
-                        String hora = safe(doc.getString("horaLectura"));
-                        String cedula = safe(doc.getString("visitanteCedula"));
-                        String nombre = safe(doc.getString("visitanteNombre"));
-                        String apellido = safe(doc.getString("visitanteApellido"));
-                        String empresa = safe(doc.getString("empresa"));
-                        String persona = safe(doc.getString("personaVisitableNombre"));
+
+                        Object fechaObjeto = doc.get("fecha");
+
+                        Date fechaVisita = null;
+
+                        if (fechaObjeto instanceof com.google.firebase.Timestamp) {
+                            fechaVisita =
+                                    ((com.google.firebase.Timestamp) fechaObjeto)
+                                            .toDate();
+                        } else if (fechaObjeto instanceof Date) {
+                            fechaVisita = (Date) fechaObjeto;
+                        }
+
+                        if (fechaVisita == null) {
+                            continue;
+                        }
+
+                        long tiempo = fechaVisita.getTime();
+
+                        if (
+                                tiempo < inicio.getTimeInMillis() ||
+                                        tiempo > fin.getTimeInMillis()
+                        ) {
+                            continue;
+                        }
+
+                        String hora =
+                                safe(doc.getString("horaLectura"));
+
+                        String cedula =
+                                safe(doc.getString("visitanteCedula"));
+
+                        String nombre =
+                                safe(doc.getString("visitanteNombre"));
+
+                        String apellido =
+                                safe(doc.getString("visitanteApellido"));
+
+                        String empresa =
+                                safe(doc.getString("empresa"));
+
+                        String persona =
+                                safe(doc.getString("personaVisitableNombre"));
 
                         TableRow fila = new TableRow(this);
 
@@ -816,12 +831,34 @@ public class MainActivity extends AppCompatActivity {
                         fila.addView(crearCelda(persona, false));
 
                         tabla.addView(fila);
+
+                        contador++;
                     }
 
-                    HorizontalScrollView scrollHorizontal = new HorizontalScrollView(this);
-                    scrollHorizontal.addView(tabla);
+                    if (contador == 0) {
 
-                    contenedor.addView(scrollHorizontal);
+                        TextView sinDatos = new TextView(this);
+
+                        sinDatos.setText(
+                                "Sin visitas registradas para el día de hoy."
+                        );
+
+                        sinDatos.setTextSize(16);
+                        sinDatos.setTextColor(Color.DKGRAY);
+                        sinDatos.setGravity(Gravity.CENTER);
+                        sinDatos.setPadding(20, 40, 20, 40);
+
+                        contenedor.addView(sinDatos);
+
+                    } else {
+
+                        HorizontalScrollView scrollHorizontal =
+                                new HorizontalScrollView(this);
+
+                        scrollHorizontal.addView(tabla);
+
+                        contenedor.addView(scrollHorizontal);
+                    }
 
                     new AlertDialog.Builder(this)
                             .setTitle("Visitas de hoy")
@@ -830,7 +867,11 @@ public class MainActivity extends AppCompatActivity {
                             .show();
                 })
                 .addOnFailureListener(e ->
-                        Toast.makeText(this, "Error consultando visitas: " + e.getMessage(), Toast.LENGTH_LONG).show()
+                        Toast.makeText(
+                                this,
+                                "No fue posible consultar las visitas. Intente nuevamente.",
+                                Toast.LENGTH_LONG
+                        ).show()
                 );
     }
 
