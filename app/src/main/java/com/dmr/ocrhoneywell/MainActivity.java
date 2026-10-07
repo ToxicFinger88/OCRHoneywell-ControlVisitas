@@ -1,7 +1,9 @@
 package com.dmr.ocrhoneywell;
 
 import android.app.AlertDialog;
+import android.app.DatePickerDialog;
 import android.content.Intent;
+
 import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Bundle;
@@ -53,6 +55,9 @@ public class MainActivity extends AppCompatActivity {
     private FirebaseFirestore db;
 
 
+
+
+
     private String usuarioUid = "";
     private String usuarioNombre = "";
     private String usuarioRol = "";
@@ -72,6 +77,9 @@ public class MainActivity extends AppCompatActivity {
     private boolean modoManual = false;
     private boolean editandoFecha = false;
     private boolean editandoTexto = false;
+
+
+    private boolean lecturaPendiente = false;
 
     private static final int REQUEST_EXPORTAR_CSV = 1001;
     private static final int REQUEST_EXPORTAR_XLS = 1002;
@@ -230,28 +238,71 @@ public class MainActivity extends AppCompatActivity {
         actualizarFechaHora();
 
         btnGuardar.setOnClickListener(v -> mostrarConfirmacionGuardar());
-        btnLimpiar.setOnClickListener(v -> limpiarCampos());
+
+
+        btnLimpiar.setOnClickListener(v -> {
+
+            if (!hayDatosEnFormulario()) {
+                Toast.makeText(
+                        this,
+                        "No hay datos para limpiar.",
+                        Toast.LENGTH_SHORT
+                ).show();
+                return;
+            }
+
+            new AlertDialog.Builder(this)
+                    .setTitle("Limpiar formulario")
+                    .setMessage(
+                            "Hay datos cargados en el formulario.\n\n" +
+                                    "¿Desea descartarlos y limpiar el formulario?"
+                    )
+                    .setPositiveButton("Limpiar", (dialog, which) -> limpiarCampos())
+                    .setNegativeButton("Cancelar", null)
+                    .show();
+        });
+
+
+
 
 
         btnSalir.setOnClickListener(v -> {
 
-            FirebaseAuth
-                    .getInstance()
-                    .signOut();
+            String mensaje;
 
-            Intent intent =
-                    new Intent(
-                            MainActivity.this,
-                            LoginActivity.class
-                    );
+            if (hayDatosEnFormulario()) {
+                mensaje =
+                        "Hay datos cargados que todavía podrían no estar guardados.\n\n" +
+                                "¿Desea salir de todas formas?";
+            } else {
+                mensaje = "¿Desea cerrar la sesión y salir?";
+            }
 
-            intent.addFlags(
-                    Intent.FLAG_ACTIVITY_NEW_TASK
-                            |
-                            Intent.FLAG_ACTIVITY_CLEAR_TASK
-            );
+            new AlertDialog.Builder(this)
+                    .setTitle("Salir del sistema")
+                    .setMessage(mensaje)
+                    .setPositiveButton("Salir", (dialog, which) -> {
 
-            startActivity(intent);
+                        FirebaseAuth
+                                .getInstance()
+                                .signOut();
+
+                        Intent intent =
+                                new Intent(
+                                        MainActivity.this,
+                                        LoginActivity.class
+                                );
+
+                        intent.addFlags(
+                                Intent.FLAG_ACTIVITY_NEW_TASK
+                                        |
+                                        Intent.FLAG_ACTIVITY_CLEAR_TASK
+                        );
+
+                        startActivity(intent);
+                    })
+                    .setNegativeButton("Cancelar", null)
+                    .show();
         });
 
 
@@ -260,7 +311,9 @@ public class MainActivity extends AppCompatActivity {
         configurarLimitesCampos();
         configurarMascaraFecha();
         configurarCapitalizacionManual();
+        configurarCalendarioFechaNacimiento();
 
+        configurarValidacionCamposVisita();
 
         btnModoManual.setOnClickListener(v -> alternarModoManual());
         activarModoOCR();
@@ -361,12 +414,30 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void procesarLectura(String lectura) {
-        limpiarCamposSinMensaje();
-        setCamposOcrEditables(false);
+
+        if (lecturaPendiente) {
+            new AlertDialog.Builder(this)
+                    .setTitle("Lectura pendiente")
+                    .setMessage(
+                            "Hay una lectura anterior que todavía no fue guardada.\n\n" +
+                                    "¿Desea descartarla y realizar una nueva lectura?"
+                    )
+                    .setPositiveButton("Nueva lectura", (dialog, which) -> {
+                        lecturaPendiente = false;
+                        procesarLectura(lectura);
+                    })
+                    .setNegativeButton("Cancelar", null)
+                    .show();
+
+            return;
+        }
 
         String[] partes = lectura.split("\\t");
 
         if (partes.length >= 5) {
+            limpiarCamposSinMensaje();
+            setCamposOcrEditables(false);
+
             txtCedula.setText(partes[0].trim());
             txtFecha.setText(formatearFechaNacimiento(partes[1].trim()));
             txtApellido1.setText(capitalizar(partes[2].trim()));
@@ -374,18 +445,71 @@ public class MainActivity extends AppCompatActivity {
             txtNombre.setText(capitalizar(partes[4].trim()));
             actualizarFechaHora();
 
+                // La persona ya fue identificada correctamente.
+                // Ahora se permite completar los datos de la visita.
+            habilitarCamposVisita(true);
+
+            lecturaPendiente = true;
+
             Toast.makeText(this, "Lectura OCR procesada", Toast.LENGTH_SHORT).show();
         } else {
-            Toast.makeText(this, "Formato OCR incompleto. Puede usar modo manual.", Toast.LENGTH_LONG).show();
+            Toast.makeText(
+                    this,
+                    "Formato OCR incompleto. Puede usar modo manual.",
+                    Toast.LENGTH_LONG
+            ).show();
         }
     }
 
-
     private void alternarModoManual() {
+
         if (modoManual) {
-            activarModoOCR();
+
+            String mensaje;
+
+            if (hayDatosEnFormulario()) {
+                mensaje =
+                        "Hay datos cargados en el formulario.\n\n" +
+                                "Al volver al modo OCR estos datos serán descartados.\n\n" +
+                                "¿Desea continuar?";
+            } else {
+                mensaje = "¿Desea volver al modo OCR?";
+            }
+
+            new AlertDialog.Builder(this)
+                    .setTitle("Volver a modo OCR")
+                    .setMessage(mensaje)
+                    .setPositiveButton("Volver a OCR", (dialog, which) -> {
+                        lecturaPendiente = false;
+                        limpiarCamposSinMensaje();
+                        activarModoOCR();
+                    })
+                    .setNegativeButton("Cancelar", null)
+                    .show();
+
         } else {
-            activarModoManual();
+
+            String mensaje;
+
+            if (hayDatosEnFormulario()) {
+                mensaje =
+                        "Hay datos cargados en el formulario.\n\n" +
+                                "Al activar el modo manual estos datos serán descartados.\n\n" +
+                                "¿Desea continuar?";
+            } else {
+                mensaje = "¿Desea cargar los datos manualmente?";
+            }
+
+            new AlertDialog.Builder(this)
+                    .setTitle("Modo manual")
+                    .setMessage(mensaje)
+                    .setPositiveButton("Activar", (dialog, which) -> {
+                        lecturaPendiente = false;
+                        limpiarCamposSinMensaje();
+                        activarModoManual();
+                    })
+                    .setNegativeButton("Cancelar", null)
+                    .show();
         }
     }
 
@@ -395,8 +519,9 @@ public class MainActivity extends AppCompatActivity {
 
         setCamposOcrEditables(true);
 
-        txtEmpresa.setEnabled(true);
-        txtPersonaVisitar.setEnabled(true);
+                // Al comenzar la carga manual, primero deben ingresarse
+                // los datos personales del visitante.
+        habilitarCamposVisita(false);
 
         btnModoManual.setText("Volver a modo OCR");
         btnModoManual.setBackgroundTintList(android.content.res.ColorStateList.valueOf(android.graphics.Color.parseColor("#374151")));
@@ -413,13 +538,20 @@ public class MainActivity extends AppCompatActivity {
 
         setCamposOcrEditables(false);
 
-        txtEmpresa.setEnabled(true);
-        txtPersonaVisitar.setEnabled(true);
+        // Empresa y persona a visitar permanecen bloqueados
+        // hasta que se realice correctamente una lectura OCR.
+        habilitarCamposVisita(false);
 
         btnModoManual.setText("Modo manual");
-        btnModoManual.setBackgroundTintList(android.content.res.ColorStateList.valueOf(android.graphics.Color.parseColor("#6B7280")));
+        btnModoManual.setBackgroundTintList(
+                android.content.res.ColorStateList.valueOf(
+                        android.graphics.Color.parseColor("#6B7280")
+                )
+        );
 
         actualizarFechaHora();
+
+        // El punto de inicio siempre será Cédula.
         txtCedula.requestFocus();
 
         Toast.makeText(this, "Modo OCR activo", Toast.LENGTH_SHORT).show();
@@ -433,6 +565,59 @@ public class MainActivity extends AppCompatActivity {
         txtApellido2.setEnabled(editable);
         txtNombre.setEnabled(editable);
     }
+
+    private void habilitarCamposVisita(boolean habilitar) {
+        txtEmpresa.setEnabled(habilitar);
+        txtPersonaVisitar.setEnabled(habilitar);
+    }
+
+    private void verificarDatosVisitanteManual() {
+
+        if (!modoManual) {
+            return;
+        }
+
+        boolean datosBasicosCompletos =
+                !valor(txtCedula).isEmpty()
+                        && fechaNacimientoValida(valor(txtFecha))
+                        && !valor(txtNombre).isEmpty();
+
+        habilitarCamposVisita(datosBasicosCompletos);
+    }
+
+    private void configurarValidacionCamposVisita() {
+
+        TextWatcher watcher = new TextWatcher() {
+            @Override
+            public void beforeTextChanged(
+                    CharSequence s,
+                    int start,
+                    int count,
+                    int after
+            ) {
+            }
+
+            @Override
+            public void onTextChanged(
+                    CharSequence s,
+                    int start,
+                    int before,
+                    int count
+            ) {
+            }
+
+            @Override
+            public void afterTextChanged(Editable s) {
+                verificarDatosVisitanteManual();
+            }
+        };
+
+        txtCedula.addTextChangedListener(watcher);
+        txtFecha.addTextChangedListener(watcher);
+        txtNombre.addTextChangedListener(watcher);
+    }
+
+
 
     private void mostrarConfirmacionGuardar() {
         if (!validarDatos()) return;
@@ -547,12 +732,15 @@ public class MainActivity extends AppCompatActivity {
 
             guardarFirebase();
 
+            lecturaPendiente = false;
+
             bufferOCR.setLength(0);
             limpiarCamposSinMensaje();
 
             activarModoOCR();
 
             Toast.makeText(this, "Datos guardados", Toast.LENGTH_SHORT).show();
+
 
         } catch (Exception e) {
             Toast.makeText(this, "Error al guardar: " + e.getMessage(), Toast.LENGTH_LONG).show();
@@ -623,15 +811,12 @@ public class MainActivity extends AppCompatActivity {
                 .setTitle("Configuración")
                 .setItems(new CharSequence[]{
                         "Ver visitas de hoy",
-                        "Exportar / Guardar",
-                        "Vaciar lecturas locales"
+                        "Exportar / Guardar"
                 }, (dialog, which) -> {
                     if (which == 0) {
                         consultarVisitasHoy();
                     } else if (which == 1) {
                         mostrarMenuExportacion();
-                    } else {
-                        confirmarVaciarLote();
                     }
                 })
                 .setNegativeButton("Cerrar", null)
@@ -1000,18 +1185,28 @@ public class MainActivity extends AppCompatActivity {
         salida.close();
     }
 
+    private boolean hayDatosEnFormulario() {
+        return !valor(txtCedula).isEmpty()
+                || !valor(txtFecha).isEmpty()
+                || !valor(txtApellido1).isEmpty()
+                || !valor(txtApellido2).isEmpty()
+                || !valor(txtNombre).isEmpty()
+                || !valor(txtEmpresa).isEmpty()
+                || !valor(txtPersonaVisitar).isEmpty();
+    }
+
+
+
     private void limpiarCampos() {
+        lecturaPendiente = false;
         bufferOCR.setLength(0);
         limpiarCamposSinMensaje();
 
-
         activarModoOCR();
-
 
         txtCedula.requestFocus();
         Toast.makeText(this, "Campos limpios", Toast.LENGTH_SHORT).show();
     }
-
     private void limpiarCamposSinMensaje() {
         txtCedula.setText("");
         txtFecha.setText("");
@@ -1130,7 +1325,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void configurarLimitesCampos() {
         txtCedula.setFilters(new InputFilter[]{
-                new InputFilter.LengthFilter(10)
+                new InputFilter.LengthFilter(20)
         });
 
         txtFecha.setFilters(new InputFilter[]{
@@ -1159,6 +1354,72 @@ public class MainActivity extends AppCompatActivity {
         txtPersonaVisitar.setFilters(new InputFilter[]{
                 new InputFilter.LengthFilter(50),
                 soloLetrasFiltro()
+        });
+    }
+
+
+    private void configurarCalendarioFechaNacimiento() {
+
+        // No permitir escribir la fecha manualmente con el teclado.
+        txtFecha.setFocusable(false);
+        txtFecha.setFocusableInTouchMode(false);
+        txtFecha.setCursorVisible(false);
+
+        txtFecha.setOnClickListener(v -> {
+
+            // El calendario solamente funciona en modo manual.
+            if (!modoManual) {
+                return;
+            }
+
+            Calendar calendario = Calendar.getInstance();
+
+            // Si ya existe una fecha, intentar abrir el calendario en esa fecha.
+            try {
+                String fechaActual = valor(txtFecha);
+
+                if (!fechaActual.isEmpty()) {
+                    SimpleDateFormat sdf =
+                            new SimpleDateFormat("dd/MM/yyyy", Locale.getDefault());
+
+                    sdf.setLenient(false);
+
+                    Date fecha = sdf.parse(fechaActual);
+
+                    if (fecha != null) {
+                        calendario.setTime(fecha);
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+
+            DatePickerDialog selectorFecha =
+                    new DatePickerDialog(
+                            MainActivity.this,
+                            (view, anio, mes, dia) -> {
+
+                                String fechaSeleccionada =
+                                        String.format(
+                                                Locale.getDefault(),
+                                                "%02d/%02d/%04d",
+                                                dia,
+                                                mes + 1,
+                                                anio
+                                        );
+
+                                txtFecha.setText(fechaSeleccionada);
+                            },
+                            calendario.get(Calendar.YEAR),
+                            calendario.get(Calendar.MONTH),
+                            calendario.get(Calendar.DAY_OF_MONTH)
+                    );
+
+            // Una persona no puede nacer en el futuro.
+            selectorFecha.getDatePicker().setMaxDate(
+                    System.currentTimeMillis()
+            );
+
+            selectorFecha.show();
         });
     }
 
