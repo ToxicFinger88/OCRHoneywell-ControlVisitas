@@ -79,7 +79,7 @@
                 android:layout_height="56dp"
                 android:background="@android:drawable/edit_text"
                 android:enabled="false"
-                android:inputType="number"
+                android:inputType="text"
                 android:padding="12dp"
                 android:textColor="#111827" />
 
