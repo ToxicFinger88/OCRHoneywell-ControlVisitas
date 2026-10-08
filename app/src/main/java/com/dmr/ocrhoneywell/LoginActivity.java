@@ -346,7 +346,7 @@ public class LoginActivity extends AppCompatActivity {
             return;
         }
 
-        abrirAplicacion(
+        validarEmpresa(
                 usuario.getUid(),
                 nombre,
                 apellido,
@@ -354,6 +354,76 @@ public class LoginActivity extends AppCompatActivity {
                 empresaId,
                 empresaNombre
         );
+    }
+
+
+    private void validarEmpresa(
+            String uid,
+            String nombre,
+            String apellido,
+            String rol,
+            String empresaId,
+            String empresaNombre
+    ) {
+
+        db.collection("empresas")
+                .document(empresaId)
+                .get(com.google.firebase.firestore.Source.SERVER)
+                .addOnSuccessListener(documento -> {
+
+                    if (!documento.exists()) {
+
+                        mostrarCarga(false);
+                        auth.signOut();
+
+                        Toast.makeText(
+                                this,
+                                "La empresa asignada no existe.",
+                                Toast.LENGTH_LONG
+                        ).show();
+
+                        return;
+                    }
+
+                    Boolean activa =
+                            documento.getBoolean("activa");
+
+                    if (!Boolean.TRUE.equals(activa)) {
+
+                        mostrarCarga(false);
+                        auth.signOut();
+
+                        Toast.makeText(
+                                this,
+                                "Empresa deshabilitada. Contacte al administrador.",
+                                Toast.LENGTH_LONG
+                        ).show();
+
+                        return;
+                    }
+
+                    abrirAplicacion(
+                            uid,
+                            nombre,
+                            apellido,
+                            rol,
+                            empresaId,
+                            empresaNombre
+                    );
+
+                })
+                .addOnFailureListener(error -> {
+
+                    mostrarCarga(false);
+                    auth.signOut();
+
+                    Toast.makeText(
+                            this,
+                            "No fue posible verificar el estado de la empresa. Intente nuevamente.",
+                            Toast.LENGTH_LONG
+                    ).show();
+
+                });
     }
 
     private void abrirAplicacion(
