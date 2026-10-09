@@ -26,6 +26,10 @@ import com.google.firebase.firestore.QuerySnapshot;
 import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.auth.FirebaseUser;
 import com.google.firebase.firestore.Source;
+import com.google.firebase.firestore.ListenerRegistration;
+import com.google.firebase.firestore.MetadataChanges;
+import com.google.firebase.firestore.FirebaseFirestoreException;
+import android.util.Log;
 
 import android.text.Editable;
 import android.text.InputFilter;
@@ -58,6 +62,9 @@ public class MainActivity extends AppCompatActivity {
     private boolean accesoVerificado = false;
     private boolean comprobandoAcceso = false;
     private boolean guardandoVisita = false;
+    private boolean revocacionEnCurso = false;
+    private ListenerRegistration escuchaUsuario;
+    private ListenerRegistration escuchaEmpresa;
 
 
 
@@ -330,6 +337,63 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @Override
+    protected void onStart() {
+        super.onStart();
+        iniciarEscuchaAcceso();
+    }
+
+    @Override
+    protected void onStop() {
+        detenerEscuchaAcceso();
+        super.onStop();
+    }
+
+    private void iniciarEscuchaAcceso() {
+        detenerEscuchaAcceso();
+        if (revocacionEnCurso || usuarioUid.isEmpty() || empresaId.isEmpty()) return;
+
+        escuchaUsuario = db.collection("usuarios").document(usuarioUid)
+                .addSnapshotListener(MetadataChanges.INCLUDE, (usuario, error) -> {
+                    if (revocacionEnCurso || isFinishing() || isDestroyed()) return;
+                    if (error != null) {
+                        gestionarErrorAcceso(error, "escucha en tiempo real");
+                        return;
+                    }
+                    if (usuario == null || usuario.getMetadata().isFromCache()) return;
+                    String rol = usuario.getString("rol");
+                    if (!usuario.exists() || !"activo".equals(usuario.getString("estado"))
+                            || !("operador".equals(rol) || "admin_empresa".equals(rol))
+                            || !empresaId.equals(usuario.getString("empresaId"))) {
+                        cerrarPorRevocacion("Su usuario fue desactivado o ya no tiene acceso autorizado.");
+                    }
+                });
+
+        escuchaEmpresa = db.collection("empresas").document(empresaId)
+                .addSnapshotListener(MetadataChanges.INCLUDE, (empresa, error) -> {
+                    if (revocacionEnCurso || isFinishing() || isDestroyed()) return;
+                    if (error != null) {
+                        gestionarErrorAcceso(error, "escucha en tiempo real");
+                        return;
+                    }
+                    if (empresa == null || empresa.getMetadata().isFromCache()) return;
+                    if (!empresa.exists() || !Boolean.TRUE.equals(empresa.getBoolean("activa"))) {
+                        cerrarPorRevocacion("Su empresa fue desactivada. La sesión se cerrará.");
+                    }
+                });
+    }
+
+    private void detenerEscuchaAcceso() {
+        if (escuchaUsuario != null) {
+            escuchaUsuario.remove();
+            escuchaUsuario = null;
+        }
+        if (escuchaEmpresa != null) {
+            escuchaEmpresa.remove();
+            escuchaEmpresa = null;
+        }
+    }
+
+    @Override
     protected void onResume() {
         super.onResume();
         verificarAcceso(false, null);
@@ -340,19 +404,29 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void cerrarPorRevocacion(String mensaje) {
+        if (revocacionEnCurso || isFinishing() || isDestroyed()) return;
+        revocacionEnCurso = true;
         accesoVerificado = false;
         habilitarGuardado(false);
-        Toast.makeText(this, mensaje, Toast.LENGTH_LONG).show();
+        detenerEscuchaAcceso();
         FirebaseAuth.getInstance().signOut();
-        Intent intent = new Intent(this, LoginActivity.class);
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
-        startActivity(intent);
-        finish();
+        new AlertDialog.Builder(this)
+                .setTitle("Acceso revocado")
+                .setMessage(mensaje)
+                .setCancelable(false)
+                .setPositiveButton("Aceptar", (dialog, which) -> {
+                    Intent intent = new Intent(this, LoginActivity.class);
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+                    startActivity(intent);
+                    finish();
+                })
+                .show();
     }
 
     // Verifica el estado vigente en el servidor; un fallo de red NO revoca la cuenta.
     private void verificarAcceso(boolean paraGuardar, Runnable autorizado) {
         FirebaseUser actual = FirebaseAuth.getInstance().getCurrentUser();
+        if (revocacionEnCurso) return;
         if (actual == null || usuarioUid.isEmpty() || empresaId.trim().isEmpty()
                 || !actual.getUid().equals(usuarioUid)) {
             cerrarPorRevocacion("Sesión inválida. Inicie sesión nuevamente.");
@@ -367,7 +441,7 @@ public class MainActivity extends AppCompatActivity {
         habilitarGuardado(false);
         db.collection("usuarios").document(usuarioUid).get(Source.SERVER)
                 .addOnSuccessListener(usuario -> {
-                    if (isFinishing() || isDestroyed()) return;
+                    if (revocacionEnCurso || isFinishing() || isDestroyed()) return;
                     String estado = usuario.getString("estado");
                     String rol = usuario.getString("rol");
                     String empresaActual = usuario.getString("empresaId");
@@ -381,7 +455,7 @@ public class MainActivity extends AppCompatActivity {
                     usuarioRol = rol;
                     db.collection("empresas").document(empresaId).get(Source.SERVER)
                             .addOnSuccessListener(empresa -> {
-                                if (isFinishing() || isDestroyed()) return;
+                                if (revocacionEnCurso || isFinishing() || isDestroyed()) return;
                                 comprobandoAcceso = false;
                                 if (!empresa.exists() || !Boolean.TRUE.equals(empresa.getBoolean("activa"))) {
                                     cerrarPorRevocacion("La empresa ya no está habilitada.");
@@ -391,17 +465,32 @@ public class MainActivity extends AppCompatActivity {
                                 habilitarGuardado(true);
                                 if (autorizado != null) autorizado.run();
                             })
-                            .addOnFailureListener(error -> errorComprobacion());
+                            .addOnFailureListener(error -> gestionarErrorAcceso(error, "verificación directa"));
                 })
-                .addOnFailureListener(error -> errorComprobacion());
+                .addOnFailureListener(error -> gestionarErrorAcceso(error, "verificación directa"));
     }
 
-    private void errorComprobacion() {
-        if (isFinishing() || isDestroyed()) return;
+    // Las reglas Firestore deniegan la lectura de empresas inactivas.
+    // Por eso la revocación puede llegar como PERMISSION_DENIED y no como un documento.
+    private void gestionarErrorAcceso(Exception error, String origen) {
+        if (revocacionEnCurso || isFinishing() || isDestroyed()) return;
+        Log.e("CONTROL_ACCESO", "Error en " + origen, error);
         comprobandoAcceso = false;
         accesoVerificado = false;
         habilitarGuardado(false);
-        Toast.makeText(this, "No se pudo verificar el acceso. Compruebe la conexión y vuelva a abrir la app.", Toast.LENGTH_LONG).show();
+
+        if (error instanceof FirebaseFirestoreException) {
+            FirebaseFirestoreException firebaseError = (FirebaseFirestoreException) error;
+            if (firebaseError.getCode() == FirebaseFirestoreException.Code.PERMISSION_DENIED
+                    || firebaseError.getCode() == FirebaseFirestoreException.Code.UNAUTHENTICATED) {
+                cerrarPorRevocacion("El acceso a su usuario o empresa fue revocado o ya no está autorizado. "
+                        + "La sesión se cerrará.");
+                return;
+            }
+        }
+        Toast.makeText(this,
+                "No se pudo verificar el acceso. Compruebe la conexión. El registro está bloqueado.",
+                Toast.LENGTH_LONG).show();
     }
 
     private void configurarCapitalizacionManual() {
@@ -833,7 +922,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void guardarFirebase(Runnable alGuardar) {
-        if (!accesoVerificado || guardandoVisita) return;
+        if (revocacionEnCurso || !accesoVerificado || guardandoVisita) return;
         guardandoVisita = true;
         habilitarGuardado(false);
         Map<String, Object> visita = new HashMap<>();
@@ -879,13 +968,15 @@ public class MainActivity extends AppCompatActivity {
                 .add(visita)
                 .addOnSuccessListener(documentReference -> {
                     guardandoVisita = false;
-                    habilitarGuardado(true);
+                    if (revocacionEnCurso) return;
+                    habilitarGuardado(accesoVerificado);
                     Toast.makeText(this, "Visita guardada en Firebase", Toast.LENGTH_SHORT).show();
                     alGuardar.run();
                 })
                 .addOnFailureListener(e -> {
                     guardandoVisita = false;
-                    habilitarGuardado(true);
+                    if (revocacionEnCurso) return;
+                    habilitarGuardado(accesoVerificado);
                     Toast.makeText(this, "No se guardó en Firebase: " + e.getMessage(), Toast.LENGTH_LONG).show();
                 });
     }
