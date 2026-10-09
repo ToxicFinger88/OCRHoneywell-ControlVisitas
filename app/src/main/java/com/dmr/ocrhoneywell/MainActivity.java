@@ -24,6 +24,8 @@ import android.widget.TextView;
 import androidx.appcompat.app.AppCompatActivity;
 import com.google.firebase.firestore.QuerySnapshot;
 import com.google.firebase.auth.FirebaseAuth;
+import com.google.firebase.auth.FirebaseUser;
+import com.google.firebase.firestore.Source;
 
 import android.text.Editable;
 import android.text.InputFilter;
@@ -53,6 +55,9 @@ public class MainActivity extends AppCompatActivity {
     private static final String CSV_HEADER =
             "cedula,fecha_nacimiento,apellido1,apellido2,nombre,empresa,persona_visitar,fecha_lectura,hora_lectura\n";
     private FirebaseFirestore db;
+    private boolean accesoVerificado = false;
+    private boolean comprobandoAcceso = false;
+    private boolean guardandoVisita = false;
 
 
 
@@ -237,7 +242,9 @@ public class MainActivity extends AppCompatActivity {
         setCamposOcrEditables(false);
         actualizarFechaHora();
 
-        btnGuardar.setOnClickListener(v -> mostrarConfirmacionGuardar());
+        btnGuardar.setOnClickListener(v -> {
+            if (!guardandoVisita) mostrarConfirmacionGuardar();
+        });
 
 
         btnLimpiar.setOnClickListener(v -> {
@@ -320,6 +327,81 @@ public class MainActivity extends AppCompatActivity {
 
         relojHandler.post(relojRunnable);
 
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        verificarAcceso(false, null);
+    }
+
+    private void habilitarGuardado(boolean habilitar) {
+        if (btnGuardar != null) btnGuardar.setEnabled(habilitar && !guardandoVisita);
+    }
+
+    private void cerrarPorRevocacion(String mensaje) {
+        accesoVerificado = false;
+        habilitarGuardado(false);
+        Toast.makeText(this, mensaje, Toast.LENGTH_LONG).show();
+        FirebaseAuth.getInstance().signOut();
+        Intent intent = new Intent(this, LoginActivity.class);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        startActivity(intent);
+        finish();
+    }
+
+    // Verifica el estado vigente en el servidor; un fallo de red NO revoca la cuenta.
+    private void verificarAcceso(boolean paraGuardar, Runnable autorizado) {
+        FirebaseUser actual = FirebaseAuth.getInstance().getCurrentUser();
+        if (actual == null || usuarioUid.isEmpty() || empresaId.trim().isEmpty()
+                || !actual.getUid().equals(usuarioUid)) {
+            cerrarPorRevocacion("Sesión inválida. Inicie sesión nuevamente.");
+            return;
+        }
+        if (comprobandoAcceso) {
+            if (paraGuardar) Toast.makeText(this, "Verificación en curso. Intente nuevamente.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        comprobandoAcceso = true;
+        accesoVerificado = false;
+        habilitarGuardado(false);
+        db.collection("usuarios").document(usuarioUid).get(Source.SERVER)
+                .addOnSuccessListener(usuario -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    String estado = usuario.getString("estado");
+                    String rol = usuario.getString("rol");
+                    String empresaActual = usuario.getString("empresaId");
+                    if (!usuario.exists() || !"activo".equals(estado)
+                            || !("operador".equals(rol) || "admin_empresa".equals(rol))
+                            || !empresaId.equals(empresaActual)) {
+                        comprobandoAcceso = false;
+                        cerrarPorRevocacion("Su usuario ya no tiene acceso autorizado.");
+                        return;
+                    }
+                    usuarioRol = rol;
+                    db.collection("empresas").document(empresaId).get(Source.SERVER)
+                            .addOnSuccessListener(empresa -> {
+                                if (isFinishing() || isDestroyed()) return;
+                                comprobandoAcceso = false;
+                                if (!empresa.exists() || !Boolean.TRUE.equals(empresa.getBoolean("activa"))) {
+                                    cerrarPorRevocacion("La empresa ya no está habilitada.");
+                                    return;
+                                }
+                                accesoVerificado = true;
+                                habilitarGuardado(true);
+                                if (autorizado != null) autorizado.run();
+                            })
+                            .addOnFailureListener(error -> errorComprobacion());
+                })
+                .addOnFailureListener(error -> errorComprobacion());
+    }
+
+    private void errorComprobacion() {
+        if (isFinishing() || isDestroyed()) return;
+        comprobandoAcceso = false;
+        accesoVerificado = false;
+        habilitarGuardado(false);
+        Toast.makeText(this, "No se pudo verificar el acceso. Compruebe la conexión y vuelva a abrir la app.", Toast.LENGTH_LONG).show();
     }
 
     private void configurarCapitalizacionManual() {
@@ -620,6 +702,10 @@ public class MainActivity extends AppCompatActivity {
 
 
     private void mostrarConfirmacionGuardar() {
+        if (!accesoVerificado || guardandoVisita) {
+            Toast.makeText(this, "Espere a que se verifique el acceso.", Toast.LENGTH_SHORT).show();
+            return;
+        }
         if (!validarDatos()) return;
 
         String mensaje =
@@ -636,7 +722,8 @@ public class MainActivity extends AppCompatActivity {
         new AlertDialog.Builder(this)
                 .setTitle("Confirmar datos")
                 .setMessage(mensaje)
-                .setPositiveButton("Confirmar", (dialog, which) -> guardarCSV())
+                .setPositiveButton("Confirmar", (dialog, which) ->
+                        verificarAcceso(true, () -> guardarFirebase(this::guardarCSV)))
                 .setNegativeButton("Cancelar", null)
                 .show();
     }
@@ -730,8 +817,6 @@ public class MainActivity extends AppCompatActivity {
 
             fw.close();
 
-            guardarFirebase();
-
             lecturaPendiente = false;
 
             bufferOCR.setLength(0);
@@ -747,7 +832,10 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void guardarFirebase() {
+    private void guardarFirebase(Runnable alGuardar) {
+        if (!accesoVerificado || guardandoVisita) return;
+        guardandoVisita = true;
+        habilitarGuardado(false);
         Map<String, Object> visita = new HashMap<>();
 
         String nombreCompleto = valor(txtNombre);
@@ -789,12 +877,17 @@ public class MainActivity extends AppCompatActivity {
 
         db.collection("visitas")
                 .add(visita)
-                .addOnSuccessListener(documentReference ->
-                        Toast.makeText(this, "Visita guardada en Firebase", Toast.LENGTH_SHORT).show()
-                )
-                .addOnFailureListener(e ->
-                        Toast.makeText(this, "Error Firebase: " + e.getMessage(), Toast.LENGTH_LONG).show()
-                );
+                .addOnSuccessListener(documentReference -> {
+                    guardandoVisita = false;
+                    habilitarGuardado(true);
+                    Toast.makeText(this, "Visita guardada en Firebase", Toast.LENGTH_SHORT).show();
+                    alGuardar.run();
+                })
+                .addOnFailureListener(e -> {
+                    guardandoVisita = false;
+                    habilitarGuardado(true);
+                    Toast.makeText(this, "No se guardó en Firebase: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                });
     }
 
     private void mostrarMenuConfiguracion() {
